@@ -1,0 +1,441 @@
+---
+title: LiSA 2021年2月号 徹底分析シリーズ</br>「一時総括：COVID-19 時代の麻酔」
+author: <a href=https://twitter.com/Med_KU target="_blank">@Med_KU</a>, <a href=https://twitter.com/dajhiroki target="_blank">@dajhiroki</a> and <a href=https://twitter.com/bodyhacker target="_blank">@bodyhacker</a>
+output:
+  html_document:
+    theme: sandstone # cerulean journal flatly readable spacelab united cosmo lumen paper sandstone simplex yeti
+    highlight: default # tango pygments kate monochrome espresso zenburn haddock textmate
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_section: true #trueでナンバリング
+    md_extensions: -ascii_identifiers
+---
+Created at `r Sys.time()`.
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, comment=""}
+library(knitr)
+knitr::opts_chunk$set(echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE, comment="",
+out.height=480, out.width=480, fig.height=7, fig.width=7)
+#knitr::knit_hooks$set(rgl = hook_webgl)
+
+# render("code.Rmd"); browseURL("code.html")
+```
+
+# <a href=https://www.medsi.co.jp/products/list?category_id=163 target="_blank">数理モデルによる未来予測の可能性</a>
+
+このページはLiSA 2021年2月号徹底分析シリーズ「一時総括：COVID-19 時代の麻酔」の解析スクリプトの解説ページです．
+
+## 図1
+
+Twitter のアンケート機能を使ってデータを収集しました．初回のアンケートは以下の通りです．
+
+全17回分はページ末尾にあります．
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動でオペ室っていまみなさんのところではどんな感じになってるんでしょうか…<br><br>麻酔科の先生にお尋ねします。<br>今（3/13）現在、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1238299708059074562?ref_src=twsrc%5Etfw">March 13, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+```{r}
+# データ収集日
+qdate <- c("03-13", "03-20", "03-27", "04-06", "04-10", "04-17", "04-27", "05-02", "05-09", "05-17", "05-22", "06-19", "07-04", "07-24", "07-31", "08-07", "08-14")
+
+# データ
+dat <- rbind(
+            c(89.3, 5.4, 3.6, 1.8),
+            c(76.6, 17, 2.1, 4.3),
+            c(82.2, 6.8, 4.1, 6.8),
+            c(64.4, 23.1, 6.9, 5.6),
+            c(45.7, 38.5, 13.1, 2.7),
+            c(26.7, 37.5, 26.7, 9.1),
+            c(24.7, 37.8, 29.5, 8),
+            c(28.8, 40.2, 23.4, 7.6),
+            c(40.9, 36.6, 19.4, 3.2),
+            c(38.9, 44.2, 11.5, 5.3),
+            c(46.3, 40.7, 9.3, 3.7),
+            c(78.3, 18.5, 1.9, 1.3),
+            c(87.2, 10.5, 2.3, 0),
+            c(79.6, 16.2, 0.7, 3.5),
+            c(80, 11, 4, 5),
+            c(87, 10.4, 1.3, 1.3),
+            c(82.2, 8.4, 0.9, 8.4)
+            )/100
+dat <- dat/rowSums(dat)
+colnames(dat) <- c("通常通り", "少し制限", "大きく制限", "原則予定手術なし") # Japanese
+
+# 回答数
+N <- c(113, 47, 73, 160, 221, 232, 288, 184, 93, 113, 54, 157, 86, 142, 100, 77, 107)
+datN <- round(dat * N)
+
+# 麻酔科学会の集計　前年度同週比較
+ja <- c("04-23"=873, "04-27"=792, "05-04"=411, "05-18"=763, "06-01"=761, "06-08"=806, "06-15"=864, "06-22"=900, "06-29"=916, "07-06"=929, "07-13"=969, "07-20"=1000, "07-27"=663, "08-03"=948, "08-10"=1029, "08-17"=824, "08-24"=1000)/1000
+month <- sprintf("%d月", 1:12)
+
+# 全身麻酔件数の取得
+url <- "https://raw.githubusercontent.com/yfujii08/lisa2021covid19/main/generalanesth"
+GA <- read.csv(url)
+GAN <- na.omit(head(GA$GA, -5))
+GAN12 <- round(GAN[GAN > 100]/12)
+
+# 有意水準と信頼区間
+alpha <- 0.05
+cia <- c(alpha/2, 0.5, 1-alpha/2)
+
+# 解析に必要なパッケージの読み込み
+# インストールされていない場合
+# install.package("quadprog")
+# install.package("Matrix")
+# install.package("vioplot")
+# install.package("igraph")
+
+library(quadprog)
+library(Matrix)
+library(vioplot)
+library(igraph)
+```
+
+
+## 図2
+
+<a href=https://ja.wikipedia.org/wiki/%E3%83%99%E3%83%BC%E3%82%BF%E5%88%86%E5%B8%83 target="_blank">ベータ分布</a> を利用してアンケート回答項目に対応する，定量的な全身麻酔件数の減少具合をサンプリングします．
+
+```{r out.height=450, out.width=630, fig.height=5, fig.width=7}
+mes <- list(optimistic=c(0.8, 0.5, 0.25),
+            estimate=c(0.7, 0.4, 0.1),
+            pessimistic=c(0.5, 0.3, 0.03)
+           )
+# variance of beta distribution
+me <- mes$estimate
+v <- 0.005
+b <- cbind(me^2*(1-me)/v-me, (1-me)*(me*(1-me)/v-1))
+x <- seq(0, 1.051, length=300)
+d <- mapply(function(z) dbeta(x, b[z, 1], b[z, 2]), seq(me))
+d <- cbind(dunif(x, 0.95, 1.05), d)
+
+# svg("fig01.svg", 7, 5)
+cols <- c("black", grey(0.7), "blue", "lightblue")
+par(mar=c(7, 5, 1, 2), las=1, cex.lab=1.5, cex.axis=1.5)
+matplot(x*100, d, type="l", lwd=3, lty=1, xlab="手術件数の制限の度合い [%]", ylab="確率密度", col=cols)
+legend(mean(par()$usr[1:2]), 0, legend=colnames(dat), ncol=4, pt.bg=cols, pch=22, yjust=2.8, xpd=TRUE, bty="n", cex=1.3, xjust=0.6, text.width=20)
+# dev.off()
+```
+
+## 図3
+
+4つの状態
+
++ 通常通り
++ 少し制限
++ 大きく制限
++ 原則予定手術なし
+
+について，隣り合う状態同士のみ推移する，と仮定する．状態$i$ から状態$j$ に推移する確率$p_{ij}$ は
+
+$$P=\begin{bmatrix}p_{11} & p_{12} & p_{13} & p_{14} \\p_{21} & p_{22} & p_{23} & p_{24} \\p_{31} & p_{32} & p_{33} & p_{34} \\p_{41} & p_{42} & p_{43} & p_{44} \end{bmatrix}$$
+
+と書けるが，隣り合う状態間しか推移しないため，
+
+$$(p_{13}, p_{14}, p_{24}, p_{31}, p_{41}, p_{42}) = 0$$
+
+となる．
+
+
+```{r out.height=180, out.width=900, fig.height=2, fig.width=10}
+# グラフの作成
+G <- graph_from_adjacency_matrix(matrix(c(0,1,0,0,1,0,1,0,0,1,0,1,0,0,1,0),
+                                 nc=4, byrow=TRUE))
+
+lmat <- cbind(1:4, 1)
+pos <- rep(c(3, 1), nrow(get.edgelist(G))/2)
+offset <- rep(1.5, nrow(get.edgelist(G)))
+# グラフを調整する
+V(G)$label.cex <- 3
+V(G)$label.font <- 2
+V(G)$label.color <- "black"
+V(G)$label.color[1] <- "white"
+V(G)$size <- 20
+V(G)$color <- cols
+E(G)$color <- "black"
+E(G)$width <- 3
+E(G)$curved <- rep(0.2, nrow(get.edgelist(G)))
+
+# svg("fig02.svg", 10, 12/6)
+par(mar=c(0, 0, 0, 0))
+plot(G, layout=lmat, ylim=c(-1, -1))
+for(i in 1:nrow(get.edgelist(G))){
+  txt <- as.expression(substitute(italic(p[x*y]), list(x=get.edgelist(G)[i,1], y=get.edgelist(G)[i,2])))
+  text(mean(layout.norm(lmat)[c((i+1)%/%2, (i+1)%/%2+1), 1]), -1, txt, pos=pos[i], cex=2, offset=offset[i])
+}
+legend(mean(par()$usr[1:2]), mean(par()$usr[3]), legend=colnames(dat), ncol=4, pt.bg=cols, pch=22, yjust=0, xpd=TRUE, bty="n", cex=1.5, xjust=0.5, text.width=0.4)
+#  dev.off()
+```
+
+
+
+## 図4
+
+アンケートの回答数（割合）から，各状態間を推移する確率を二次計画法で推定する．二次計画法の条件式は
+
+
+$$\begin{eqnarray}(p_{13}, p_{14}, p_{24}, p_{31}, p_{41}, p_{42}) &=& 0\\p_{11}+p_{12}&=&1\\ p_{21}+p_{22}+p_{23}&=&1\\p_{32}+p_{33}+p_{34}&=&1\\p_{43}+p_{44}&=&1\\0\leq (p_{11},p_{12},p_{21},p_{22},p_{23},p_{32},p_{33},p_{34},p_{43},p_{44}&\leq& 1\end{eqnarray}$$
+
+で与えられるため，これを満たすオブジェクト<code>const</code> を用意する．
+
+```{r out.height=450, out.width=900, fig.height=5, fig.width=10}
+# 二次計画法のための制限式
+const <- read.csv(text=
+                 "0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
+                  0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1
+                  0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1
+                  0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1
+                  0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1
+                  0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1
+                  1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,1
+                  0,1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,1,1
+                  0,0,0,0,0,0,1,0,0,0,1,0,0,0,1,0,1,1
+                  0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,1,1
+                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                  0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                  0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+                  0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0
+                  0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0
+                  0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0
+                  0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0
+                  0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0
+                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0
+                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0
+                  -1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0
+                  0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0
+                  0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,-1,0
+                  0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,-1,0
+                  0,0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,-1,0
+                  0,0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,-1,0
+                  0,0,0,0,0,0,0,0,0,0,-1,0,0,0,0,0,-1,0
+                  0,0,0,0,0,0,0,0,0,0,0,-1,0,0,0,0,-1,0
+                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,-1,0
+                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,0"
+                  , header=FALSE)
+bvec <- const[,ncol(const)-1]
+Amat <- t(const[,1:16])
+meq <- sum(const$meq)
+
+dat1 <- rbind(c(1, 0, 0, 0), dat)
+sol <- NULL
+for(k in 2:(nrow(dat1)-1)){
+  y <- c(dat1[k:(k+1),])
+  Xj <- dat1[(k-1):k,]
+  X <- matrix(0, nrow(Xj)*ncol(Xj), ncol(Xj)*ncol(Xj))
+  for(i in 1:ncol(Xj)){
+    X[(nrow(Xj)*(i-1)+1):(nrow(Xj)*i), (ncol(Xj)*(i-1)+1):(ncol(Xj)*i)] <- Xj
+  }
+  Dmat <- nearPD(t(X) %*% X)$mat
+  dvec <- c(y %*% X)
+  sol <- rbind(sol, solve.QP(Dmat,dvec,Amat,bvec=bvec, meq=meq)$solution)
+}
+
+sol[sol < 0] <- 0
+ps0 <- mapply(function(z) t(matrix(sol[z,], 4)), 1:nrow(sol), SIMPLIFY=FALSE)
+est <- rbind(dat[1,], t(mapply(function(z) ps0[[z]]%*%dat[z,], 1:(nrow(dat)-1))))
+
+
+yl <- c(0, 1)
+# svg("fig03.svg", width=10, height=5)
+xt <- as.Date(strptime(sprintf("2020-%s", qdate), format="%Y-%m-%d"))
+xts <- seq.Date(xt[1], tail(xt, 1), by=1)
+mt <- as.numeric(format(xt, "%m"))
+r <- rle(mt)
+pch0 <- c(16, 15, 17, 18)
+pch1 <- c(21, 22, 24, 23)
+xd <- 1
+yd <- 0.15
+par(mar=c(7, 5, 1, 1), cex.lab=1.3, las=1)
+matplot(xt, dat, type="n", col=cols, lty=1, lwd=3, ylim=yl, xaxt="n", xlab="", ylab="", cex.axis=1.5, yaxt="n")
+axis(2, at=seq(0, 1, length=6), labels=seq(0, 100, length=6), cex.axis=1.5)
+mtext("アンケート回答割合 [%]", side=2, line=3.2, las=3, cex=1.5, adj=0.2)
+# axis(1, at=seq(qdate), labels=gsub("-", "/", qdate), las=1, cex.axis=1)
+for(i in 1:length(xt)){
+  axis(1, at=xt[i], labels=as.numeric(format(xt, "%d"))[i], las=1, cex.axis=1.2)
+}
+for(i in 1:ncol(dat)){
+  lines(xt, est[,i], col=cols[i], lwd=4)
+  points(xt, dat[,i], col=cols[i], pch=pch0[i], cex=1.5)
+}
+legend(mean(par()$usr[1:2]), 0, legend=colnames(dat), ncol=4, pt.bg=cols, yjust=2.2, xpd=TRUE, bty="n", cex=1.8, xjust=0.6, text.width=28, pch=pch1)
+for(i in seq(r$values)){
+  x01 <- which(as.numeric(format(xts, "%m")) == r$values[i])
+  x0 <- head(x01, 1); x1 <- tail(x01, 1)
+  segments(xts[x0]+xd, par()$usr[3]-yd, xts[x1]-xd, xpd=TRUE, lwd=2)
+  axis(1, at=mean(xts[c(x0, x1)]), labels=month[r$values[i]], las=1, cex.axis=1, tick=FALSE, line=2, cex.axis=1.5)
+}
+axis(1, at=par()$usr[1], labels="日", las=1, cex.axis=1, tick=FALSE, line=0, hadj=1, cex.axis=1.5)
+axis(1, at=par()$usr[1], labels="月", las=1, cex.axis=1, tick=FALSE, line=2, hadj=1, cex.axis=1.5)
+# dev.off()
+```
+
+
+## 図5
+
+
+`ps0` は各アンケート回の間での推移確率のオブジェクトであり，各アンケート回$t$ で$P$ に応じて状態を推移する．状態の推移は<a href=https://ja.wikipedia.org/wiki/%E5%A4%9A%E9%A0%85%E5%88%86%E5%B8%83 target="_blank">多項分布</a>`rmultinom` でサンプリングする．
+
+状態を推移したあと，
+
++ 状態1 （通常通り）であれば，一様分布`runif`
+
++ 状態2, 3, 4 （制限あり）であれば，ベータ分布`rbeta`
+
+により，手術件数の減少割合をサンプリングする．
+
+
+
+```{r out.height=450, out.width=900, fig.height=5, fig.width=10, eval=TRUE}
+# 3パターンで全身麻酔件数をシミュレーションする
+N_sim <- 100
+
+res <- vector("list", 3)
+names(res) <- names(mes)
+for(l in seq(res)){
+  me <- mes[[l]]
+  b <- cbind(me^2*(1-me)/v-me, (1-me)*(me*(1-me)/v-1))
+  Res <- matrix(0, N_sim, nrow(dat))
+  for(k in 1:N_sim){
+    status <- g <- matrix(0, nrow(dat), length(GAN12))
+    status[1,] <- apply(rmultinom(length(GAN12), size=1, prob=dat[1,])==1, 2, which)
+    for(i in 2:nrow(status)){
+      for(j in 1:ncol(status)){
+        status[i, j] <- which(rmultinom(1, 1, prob=ps0[[i-1]][, status[i-1, j]]) == 1)
+      }
+    }
+    for(i in 1:nrow(g)){
+      for(j in 1:ncol(g)){
+        if( status[i, j] == 1){
+          g[i, j] <- GAN12[j] * runif(1, 0.95, 1.05)
+        } else {
+          #g[i, j] <- GAN12[j] * rbeta(1, b[status[i, j]-1, 1], b[status[i, j]-1, 2])
+          g[i, j] <- rbinom(1, GAN12[j], rbeta(1, b[status[i, j]-1, 1], b[status[i, j]-1, 2]))
+        }
+      }
+    }
+    Res[k, ] <- rowSums(g)
+  }
+  # 週あたりにする
+  res[[l]] <- Res/4/10000
+}
+names(res) <- names(mes)
+
+percentile <- mapply(function(z) round(apply(z, 2, quantile, cia), 2), res, SIMPLIFY=FALSE)
+percentile <- do.call(rbind, percentile)
+rownames(percentile) <- paste(rep(names(res), each=3), rownames(percentile), sep="_")
+colnames(percentile) <- gsub("-", "/", qdate)
+
+Z <- as.data.frame(res$estimate)
+# svg("fig05.svg", width=10, height=5)
+xd <- 1
+yd <- 0.27
+par(mar=c(5, 5, 1, 1), cex.lab=1.3, cex.axis=1.5, las=1)
+plot(c(1, ncol(Z))+c(1,-1)*-0.5, c(0, 1), type="n", xaxt="n", xlim=range(xt), ylim=c(2.5, 4.5), xlab="", ylab="")
+mtext(as.expression(substitute("全身麻酔件数 ["*10^4*"/週]")), 2, las=3, line=3, adj=0.8, cex=1.2)
+for(i in 1:length(xt)){
+  axis(1, at=xt[i], labels=as.numeric(format(xt, "%d"))[i], las=1, cex.axis=1.2)
+}
+vioplot(Z, at=xt, add=TRUE, col=cols[replace(rep(2, ncol(Z)), seq(qdate), 1)], colMed=NA, wex=5)
+for(i in seq(r$values)){
+  x01 <- which(as.numeric(format(xts, "%m")) == r$values[i])
+  x0 <- head(x01, 1); x1 <- tail(x01, 1)
+  segments(xts[x0]+xd, par()$usr[3]-yd, xts[x1]-xd, xpd=TRUE, lwd=2)
+  axis(1, at=mean(xts[c(x0, x1)]), labels=month[r$values[i]], las=1, cex.axis=1, tick=FALSE, line=2, cex.axis=1.5)
+}
+axis(1, at=par()$usr[1], labels="日", las=1, cex.axis=1, tick=FALSE, line=0, hadj=1, cex.axis=1.5)
+axis(1, at=par()$usr[1], labels="月", las=1, cex.axis=1, tick=FALSE, line=2, hadj=1, cex.axis=1.5)
+# dev.off()
+```
+
+## 図6
+
+
+日本麻酔科学会（JSA）の<a href=https://anesth.or.jp/users/news/detail/5e86be3b-f6cc-491c-9ded-79b41b002544 target="_blank">新型コロナウイルス感染症（COVID-19）に関する本学会の対応</a>ではアンケート調査により全身麻酔の件数を推定している．この結果と感度分析（楽観的推定と悲観的推定）の結果と比較する．
+
+```{r out.height=450, out.width=900, fig.height=5, fig.width=10}
+# svg("fig06.svg", width=10, height=5)
+Zs <- lapply(res, apply, 2, quantile, cia)
+zcols <- cols[c(3, 2, 4)]
+lty0 <- c(3, 1, 2)
+xd <- 1
+yd <- 0.15
+xtja <- as.Date(sprintf("2020-%s", names(ja)))
+xts <- seq.Date(xt[1], tail(max(xt, xtja), 1), by=1)
+xl <- range(xt, xtja)
+par(mar=c(6.5, 6, 1, 1), cex.lab=1.2, cex.axis=1.5, las=1)
+matplot(xt, sapply(Zs, colMeans)/(sum(GAN12)/4/10000), type="n", xaxt="n", yaxt="n", xlim=xl, ylim=c(0, 1.05), xlab="", ylab="", col=zcols, lwd=5, pch=15, lty=1)
+emg <- xts[c(26, 74)]
+polygon(emg[c(1, 2, 2, 1)], par()$usr[c(3, 3, 4, 4)], col=grey(0.90), border=NA)
+for(i in 1:3){
+  lines(xt, colMeans(Zs[[i]])/(sum(GAN12)/4/10000), col=zcols[i], lwd=5, lty=lty0[i], type="o", pch=pch0[i], cex=1.5)
+}
+text(mean(emg), par()$usr[3], "緊急事態宣言期間", pos=3, cex=1.5)
+mtext("全身麻酔件数（前年度比較）[%]", 2, las=3, line=3.5, cex=1.5, adj=-0.3)
+axis(2, at=seq(0, 1, length=6), labels=seq(0, 100, length=6))
+for(i in 1:length(xt)){
+  axis(1, at=xt[i], labels=as.numeric(format(xt, "%d"))[i], las=1, cex.axis=1.2)
+}
+for(i in seq(r$values)){
+  x01 <- which(as.numeric(format(xts, "%m")) == r$values[i])
+  x0 <- head(x01, 1); x1 <- tail(x01, 1)
+  segments(xts[x0]+xd, par()$usr[3]-yd, xts[x1]-xd, xpd=TRUE, lwd=2)
+  axis(1, at=mean(xts[c(x0, x1)]), labels=month[r$values[i]], las=1, cex.axis=1, tick=FALSE, line=2, cex.axis=1.5)
+}
+axis(1, at=par()$usr[1], labels="日", las=1, cex.axis=1, tick=FALSE, line=0, hadj=1, cex.axis=1.5)
+axis(1, at=par()$usr[1], labels="月", las=1, cex.axis=1, tick=FALSE, line=2, hadj=1, cex.axis=1.5)
+lines(xtja, ja, lwd=5, type="o", pch=pch0[4], cex=1.5)
+legend(mean(par()$usr[1:2]), par()$usr[3], legend=c("楽観的", "推定値", "悲観的", "JSA報告"), pch=pch0, lty=c(lty0, 1), ncol=4, col=c(zcols, "black"), cex=2, bty="n", xjust=0.55, yjust=1.8, xpd=TRUE, merge=TRUE, lwd=3)
+# dev.off()
+
+```
+
+# Appendix
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動、全国のオペ室はどうなっているのかアンケート第二弾<br><br>麻酔科の先生にお尋ねします。<br>手術室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1240772960924794880?ref_src=twsrc%5Etfw">March 19, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート３回目<br><br>全国の麻酔科の先生におたずねします。<br>今（3/27）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1243327743040745472?ref_src=twsrc%5Etfw">March 27, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート4回目<br><br>全国の麻酔科の先生におたずねします。<br>今（4/6）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1246946140630552576?ref_src=twsrc%5Etfw">April 5, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート5回目<br><br>全国の麻酔科の先生におたずねします。<br>今（4/10）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1248448870377373697?ref_src=twsrc%5Etfw">April 10, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート6回目<br><br>全国の麻酔科の先生におたずねします。<br>今（4/17）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1250938192334815234?ref_src=twsrc%5Etfw">April 17, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート7回目<br><br>全国の麻酔科の先生におたずねします。<br>今（4/24）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1253588554103402498?ref_src=twsrc%5Etfw">April 24, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート8回目<br><br>全国の麻酔科の先生におたずねします。<br>今（5/2）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1256384655458107394?ref_src=twsrc%5Etfw">May 2, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート9回目<br><br>全国の麻酔科の先生におたずねします。<br>今（5/9）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1258598314494136320?ref_src=twsrc%5Etfw">May 8, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート10回目<br><br>全国の麻酔科の先生におたずねします。<br>今（5/17）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1261446399377301504?ref_src=twsrc%5Etfw">May 16, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート11回目<br><br>全国の麻酔科の先生におたずねします。<br>今（5/22）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1263739620321157120?ref_src=twsrc%5Etfw">May 22, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート12回目<br><br>全国の麻酔科の先生におたずねします。<br>今（6/19）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1273875534611574785?ref_src=twsrc%5Etfw">June 19, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート13回目<br><br>全国の麻酔科の先生におたずねします。<br>今（7/4）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1279206368981876737?ref_src=twsrc%5Etfw">July 4, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート14回目<br><br>全国の麻酔科の先生におたずねします。<br>今（7/24）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1286582435774267392?ref_src=twsrc%5Etfw">July 24, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート15回目<br><br>全国の麻酔科の先生におたずねします。<br>今（7/31）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1288984358649393152?ref_src=twsrc%5Etfw">July 30, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート16回目<br><br>全国の麻酔科の先生におたずねします。<br>今（8/7）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1291574839338135553?ref_src=twsrc%5Etfw">August 7, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
+<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">コロナウィルス騒動で全国のオペ室今どうなってるのかアンケート17回目<br><br>全国の麻酔科の先生におたずねします。<br>今（8/14）現在、オペ室は、</p>&mdash; DAJ (@dajhiroki) <a href="https://twitter.com/dajhiroki/status/1294061341154500609?ref_src=twsrc%5Etfw">August 14, 2020</a></blockquote> <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+
